@@ -29,21 +29,9 @@ from .Network_analysis import (
 from .Analyzer import DrugBrainAnalyzer
 from .Pathway_analysis import PathwayAnalyzer
 
-# Define module-level constants
-ADDICTION_BRAIN_REGIONS = [
-    "Ventral_Tegmental_Area",
-    "Nucleus_Accumbens",
-    "Putamen",
-    "Amygdala",
-    "Hippocampus",
-    "Habenula",
-    "Anterior_Cingulate_Cortex",
-    "Orbitofrontal_Gyrus",
-    "Caudate_Nucleus",
-    "Insular_Cortex"
-]
+
 
 # Module information
 __version__ = '0.1.0'
-__author__ = 'Brain Drug Analyzer Team'
+__author__ = 'Brain Drug Analyzer'
 __description__ = 'Tools for analyzing drug interactions in brain addiction networks'
