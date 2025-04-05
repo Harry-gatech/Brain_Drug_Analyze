@@ -3,16 +3,17 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import re
 from collections import defaultdict
 from typing import Dict, List, Set, Optional, Union, Tuple
 
 class PathwayAnalyzer:
     """
-    A class for analyzing pathways associated with drug interactions in specific brain regions.
-    This component integrates with the network analysis to provide pathway enrichment analysis.
+    A class for analyzing pathways associated with drug interactions in specific brain regions,
+    including suppression/addiction ratio analysis.
     """
     
-    def __init__(self, enrichment_file_path=None):
+    def __init__(self, enrichment_file_path=None, output_dir="results"):
         """
         Initialize the PathwayAnalyzer with an optional enrichment file.
         
@@ -20,11 +21,18 @@ class PathwayAnalyzer:
         -----------
         enrichment_file_path : str, optional
             Path to the enrichment analysis file containing pathway information
+        output_dir : str, default="results"
+            Directory to save analysis outputs
         """
         self.pathway_to_genes = {}
         self.gene_to_pathways = defaultdict(list)
         self.significant_pval = 0.05
+        self.output_dir = output_dir
         
+        # Create output directory if it doesn't exist
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            
         if enrichment_file_path and os.path.exists(enrichment_file_path):
             self.load_enrichment_data(enrichment_file_path)
     
@@ -38,6 +46,11 @@ class PathwayAnalyzer:
             Path to the enrichment analysis file
         separator : str, default='\t'
             Separator used in the enrichment file
+            
+        Returns:
+        --------
+        bool
+            True if data was loaded successfully, False otherwise
         """
         try:
             df_enrichment = pd.read_csv(enrichment_file_path, sep=separator, on_bad_lines='skip')
@@ -75,10 +88,10 @@ class PathwayAnalyzer:
             return False
     
     def analyze_drug_region_pathways(self, 
-                                    drug_genes: Set[str], 
-                                    region_genes: Dict[str, Set[str]], 
-                                    addiction_genes: Set[str], 
-                                    suppression_genes: Set[str]) -> Dict:
+                                   drug_genes: Set[str], 
+                                   region_genes: Dict[str, Set[str]], 
+                                   addiction_genes: Set[str], 
+                                   suppression_genes: Set[str]) -> Dict:
         """
         Analyze pathways for a drug in a specific brain region.
         
@@ -181,64 +194,382 @@ class PathwayAnalyzer:
         
         return suppression_count / addiction_count
     
-    def generate_ratio_heatmap(self, 
-                              ratio_data: Dict[str, Dict[str, float]], 
-                              output_path: str = None,
-                              title: str = "Suppression/Addiction Ratio Heatmap"):
+    def process_pathway_reports(self, 
+                              addictive_dir: str, 
+                              nonaddictive_dir: str, 
+                              output_subdir: str = "ratio_analysis") -> Tuple[Dict, Dict]:
         """
-        Generate a heatmap visualization of suppression/addiction ratios across drugs and brain regions.
+        Process pathway report files to extract suppression/addiction ratios.
         
         Parameters:
         -----------
-        ratio_data : Dict[str, Dict[str, float]]
-            Nested dictionary with format {drug_name: {region_name: ratio}}
-        output_path : str, optional
-            Path to save the heatmap image
-        title : str, default="Suppression/Addiction Ratio Heatmap"
-            Title for the heatmap
+        addictive_dir : str
+            Directory containing pathway reports for addictive drugs
+        nonaddictive_dir : str
+            Directory containing pathway reports for non-addictive drugs
+        output_subdir : str, default="ratio_analysis"
+            Subdirectory in output_dir to save results
             
         Returns:
         --------
-        plt.Figure
-            Matplotlib figure object with the heatmap
+        Tuple[Dict, Dict]
+            Dictionaries with ratios for addictive and non-addictive drugs
         """
-        # Convert to DataFrame
-        drugs = list(ratio_data.keys())
-        all_regions = set()
-        for drug_ratios in ratio_data.values():
-            all_regions.update(drug_ratios.keys())
+        # Create output subdirectory
+        output_dir = os.path.join(self.output_dir, output_subdir)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            
+        # Process addictive drugs
+        print("Processing addictive drug reports...")
+        addictive_data = self._extract_ratios_from_reports(addictive_dir)
         
-        regions = sorted(all_regions)
+        # Process non-addictive drugs
+        print("Processing non-addictive drug reports...")
+        nonaddictive_data = self._extract_ratios_from_reports(nonaddictive_dir)
         
-        # Create matrix for heatmap
-        matrix = np.zeros((len(drugs), len(regions)))
+        # Generate heatmaps
+        self.generate_ratio_heatmap(addictive_data, "Addictive", output_dir)
+        self.generate_ratio_heatmap(nonaddictive_data, "Non-Addictive", output_dir)
         
-        for i, drug in enumerate(drugs):
-            for j, region in enumerate(regions):
-                if region in ratio_data[drug]:
-                    matrix[i, j] = ratio_data[drug][region]
+        # Save data to CSV
+        self._save_ratio_data_to_csv(addictive_data, nonaddictive_data, output_dir)
         
-        # Create figure and heatmap
-        plt.figure(figsize=(12, 8))
-        ax = sns.heatmap(matrix, annot=True, fmt=".2f", cmap="viridis",
-                         xticklabels=regions, yticklabels=drugs)
-        plt.title(title)
-        plt.xlabel("Brain Regions")
-        plt.ylabel("Drugs")
-        plt.xticks(rotation=45, ha="right")
+        # Create summary report
+        self._create_ratio_analysis_summary(addictive_data, nonaddictive_data, addictive_dir, nonaddictive_dir, output_dir)
+        
+        return addictive_data, nonaddictive_data
+    
+    def _extract_ratios_from_reports(self, directory: str) -> Dict:
+        """
+        Extract suppression/addiction ratios from pathway report files.
+        
+        Parameters:
+        -----------
+        directory : str
+            Directory containing pathway report files
+            
+        Returns:
+        --------
+        Dict
+            Dictionary with structure {drug_name: {brain_region: ratio}}
+        """
+        if not os.path.exists(directory):
+            print(f"Directory does not exist: {directory}")
+            return {}
+        
+        # Data structure to store results
+        drug_region_ratios = defaultdict(dict)
+        
+        # Get all report files
+        report_files = [f for f in os.listdir(directory) if f.endswith('_pathways.txt') 
+                       and not f.startswith('Addiction_Genes_') 
+                       and not f.startswith('Suppression_Genes_')]
+        
+        # Process each report file
+        for report_file in report_files:
+            # Use regex to extract drug name and brain region from filename
+            match = re.match(r"(.+?)_(.+)_pathways\.txt", report_file)
+            if match:
+                drug_name = match.group(1)
+                brain_region = match.group(2)
+                
+                file_path = os.path.join(directory, report_file)
+                
+                try:
+                    # Extract combined gene counts and calculate ratio
+                    total_addiction, total_suppression = self._extract_gene_counts_from_report(file_path)
+                    
+                    # Calculate ratio (suppression to addiction)
+                    if total_addiction > 0:
+                        ratio = total_suppression / total_addiction
+                    else:
+                        ratio = float('inf') if total_suppression > 0 else 0
+                        
+                    # Store the ratio
+                    drug_region_ratios[drug_name][brain_region] = ratio
+                        
+                except Exception as e:
+                    print(f"Error processing {report_file}: {e}")
+        
+        return drug_region_ratios
+    
+    def _extract_gene_counts_from_report(self, file_path: str) -> Tuple[int, int]:
+        """
+        Extract addiction and suppression gene counts from a drug pathway report file.
+        
+        Parameters:
+        -----------
+        file_path : str
+            Path to the report file
+            
+        Returns:
+        --------
+        Tuple[int, int]
+            (total_addiction_count, total_suppression_count)
+        """
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read()
+            
+            # Extract normal and high expression gene counts
+            normal_match = re.search(r"Normal Expression - Addiction Genes: (\d+) genes\nNormal Expression - Suppression Genes: (\d+) genes", content)
+            high_match = re.search(r"High Expression - Addiction Genes: (\d+) genes\nHigh Expression - Suppression Genes: (\d+) genes", content)
+            
+            # Default to 0 if not found
+            normal_addiction = int(normal_match.group(1)) if normal_match else 0
+            normal_suppression = int(normal_match.group(2)) if normal_match else 0
+            high_addiction = int(high_match.group(1)) if high_match else 0
+            high_suppression = int(high_match.group(2)) if high_match else 0
+            
+            # Combine normal and high expression counts
+            total_addiction = normal_addiction + high_addiction
+            total_suppression = normal_suppression + high_suppression
+            
+            return total_addiction, total_suppression
+                
+        except Exception as e:
+            print(f"Error extracting data from {file_path}: {e}")
+            return 0, 0
+    
+    def generate_ratio_heatmap(self, 
+                              data: Dict, 
+                              drug_type: str, 
+                              output_dir: str) -> None:
+        """
+        Generate a heatmap visualization of suppression/addiction ratios.
+        
+        Parameters:
+        -----------
+        data : Dict
+            Dictionary with structure {drug_name: {brain_region: ratio}}
+        drug_type : str
+            Label for the drug type (e.g., "Addictive", "Non-Addictive")
+        output_dir : str
+            Directory to save the output file
+        """
+        # Convert to DataFrame for visualization
+        rows = []
+        
+        for drug, regions in data.items():
+            for region, ratio in regions.items():
+                rows.append({
+                    'Drug': drug,
+                    'Region': region,
+                    'Ratio': ratio if ratio != float('inf') else np.nan  # Handle infinity
+                })
+        
+        if not rows:
+            print(f"No data available to create heatmap for {drug_type} drugs")
+            return
+            
+        df = pd.DataFrame(rows)
+        
+        # Create a pivot table for the heatmap
+        pivot_df = df.pivot_table(
+            values='Ratio', 
+            index='Drug',
+            columns='Region',
+            aggfunc='mean'
+        )
+        
+        # Sort drugs and regions alphabetically
+        pivot_df = pivot_df.sort_index(axis=0)
+        pivot_df = pivot_df.sort_index(axis=1)
+        
+        # Determine sensible color scale values
+        values = [v for v in df['Ratio'] if v != float('inf') and not np.isnan(v)]
+        if values:
+            vmin = max(1, np.percentile(values, 5))  # Use 5th percentile, but at least 1
+            vmax = min(np.percentile(values, 95), 30)  # Use 95th percentile, cap at 30
+        else:
+            vmin = 1
+            vmax = 20
+        
+        # Set up the figure
+        fig_width = max(16, len(pivot_df.columns) * 0.5)  # Adjust width based on columns
+        fig_height = max(8, len(pivot_df) * 0.5)  # Adjust height based on rows
+        
+        plt.figure(figsize=(fig_width, fig_height))
+        
+        # Generate heatmap
+        ax = sns.heatmap(
+            pivot_df, 
+            cmap='Blues_r',  # Reverse blue colormap (darker = lower values)
+            annot=True,      # Show values
+            fmt='.1f',       # Format to 1 decimal place
+            linewidths=0.5,
+            vmin=vmin,
+            vmax=vmax,
+            cbar_kws={'label': 'Suppression/Addiction Ratio'}
+        )
+        
+        # Customize the plot
+        plt.title(f'Suppression/Addiction Ratio for {drug_type} Drugs', fontsize=16)
+        
+        # Format x-axis labels - replace underscores with spaces
+        x_labels = [label.replace('_', ' ') for label in pivot_df.columns]
+        ax.set_xticklabels(x_labels, rotation=90, ha='center')
+        
+        # Format y-axis labels - replace underscores with spaces
+        y_labels = [label.replace('_', ' ') for label in pivot_df.index]
+        ax.set_yticklabels(y_labels, rotation=0)
+        
+        # Adjust layout
         plt.tight_layout()
         
-        # Save if output path is provided
-        if output_path:
-            plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        # Save the figure
+        filename = os.path.join(output_dir, f'suppression_addiction_ratio_{drug_type.lower().replace("-", "_")}_drugs.png')
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"Saved {drug_type} drugs heatmap to {filename}")
+    
+    def _save_ratio_data_to_csv(self, 
+                              addictive_data: Dict, 
+                              nonaddictive_data: Dict, 
+                              output_dir: str) -> None:
+        """
+        Save ratio data to CSV files for further analysis.
         
-        return plt.gcf()
+        Parameters:
+        -----------
+        addictive_data : Dict
+            Data for addictive drugs
+        nonaddictive_data : Dict
+            Data for non-addictive drugs
+        output_dir : str
+            Directory to save output files
+        """
+        # Convert addictive drug data to DataFrame
+        addictive_rows = []
+        for drug, regions in addictive_data.items():
+            for region, ratio in regions.items():
+                addictive_rows.append({
+                    'Drug': drug,
+                    'Region': region,
+                    'Ratio': ratio if ratio != float('inf') else 'Inf',
+                    'Type': 'Addictive'
+                })
+        
+        # Convert non-addictive drug data to DataFrame
+        nonaddictive_rows = []
+        for drug, regions in nonaddictive_data.items():
+            for region, ratio in regions.items():
+                nonaddictive_rows.append({
+                    'Drug': drug,
+                    'Region': region,
+                    'Ratio': ratio if ratio != float('inf') else 'Inf',
+                    'Type': 'Non-Addictive'
+                })
+        
+        # Combine both datasets
+        all_rows = addictive_rows + nonaddictive_rows
+        combined_df = pd.DataFrame(all_rows)
+        
+        # Save to CSV files
+        combined_df.to_csv(os.path.join(output_dir, 'all_suppression_addiction_ratios.csv'), index=False)
+        
+        # Create pivot tables for addictive and non-addictive drugs
+        if addictive_rows:
+            addictive_df = pd.DataFrame(addictive_rows)
+            addictive_pivot = addictive_df.pivot_table(
+                values='Ratio', 
+                index='Drug',
+                columns='Region',
+                aggfunc='mean'
+            )
+            addictive_pivot.to_csv(os.path.join(output_dir, 'addictive_drugs_ratio_matrix.csv'))
+        
+        if nonaddictive_rows:
+            nonaddictive_df = pd.DataFrame(nonaddictive_rows)
+            nonaddictive_pivot = nonaddictive_df.pivot_table(
+                values='Ratio', 
+                index='Drug',
+                columns='Region',
+                aggfunc='mean'
+            )
+            nonaddictive_pivot.to_csv(os.path.join(output_dir, 'nonaddictive_drugs_ratio_matrix.csv'))
+        
+        print(f"Saved ratio data to CSV files in {output_dir}")
+    
+    def _create_ratio_analysis_summary(self,
+                                     addictive_data: Dict,
+                                     nonaddictive_data: Dict,
+                                     addictive_dir: str,
+                                     nonaddictive_dir: str,
+                                     output_dir: str) -> None:
+        """
+        Create a summary report of the ratio analysis.
+        
+        Parameters:
+        -----------
+        addictive_data : Dict
+            Data for addictive drugs
+        nonaddictive_data : Dict
+            Data for non-addictive drugs
+        addictive_dir : str
+            Directory containing addictive drug reports
+        nonaddictive_dir : str
+            Directory containing non-addictive drug reports
+        output_dir : str
+            Directory to save output files
+        """
+        # Extract values for summary statistics
+        addictive_values = []
+        for drug, regions in addictive_data.items():
+            for region, ratio in regions.items():
+                if ratio != float('inf') and not np.isnan(ratio):
+                    addictive_values.append(ratio)
+        
+        nonaddictive_values = []
+        for drug, regions in nonaddictive_data.items():
+            for region, ratio in regions.items():
+                if ratio != float('inf') and not np.isnan(ratio):
+                    nonaddictive_values.append(ratio)
+        
+        # Save summary to file
+        summary_file = os.path.join(output_dir, "ratio_analysis_summary.txt")
+        with open(summary_file, 'w') as f:
+            f.write("Suppression/Addiction Ratio Analysis Summary\n")
+            f.write("==========================================\n\n")
+            f.write(f"Addictive Drugs Directory: {addictive_dir}\n")
+            f.write(f"Non-Addictive Drugs Directory: {nonaddictive_dir}\n\n")
+            f.write(f"Number of Addictive Drugs Analyzed: {len(addictive_data)}\n")
+            f.write(f"Number of Non-Addictive Drugs Analyzed: {len(nonaddictive_data)}\n\n")
+            
+            f.write("Summary Statistics:\n")
+            f.write("-----------------\n\n")
+            
+            if addictive_values:
+                f.write(f"Addictive Drugs (n={len(addictive_values)}):\n")
+                f.write(f"  Mean Ratio: {np.mean(addictive_values):.2f}\n")
+                f.write(f"  Median Ratio: {np.median(addictive_values):.2f}\n")
+                f.write(f"  Standard Deviation: {np.std(addictive_values):.2f}\n")
+                f.write(f"  Range: {min(addictive_values):.2f} - {max(addictive_values):.2f}\n\n")
+            else:
+                f.write("No data available for addictive drugs\n\n")
+                
+            if nonaddictive_values:
+                f.write(f"Non-addictive Drugs (n={len(nonaddictive_values)}):\n")
+                f.write(f"  Mean Ratio: {np.mean(nonaddictive_values):.2f}\n")
+                f.write(f"  Median Ratio: {np.median(nonaddictive_values):.2f}\n")
+                f.write(f"  Standard Deviation: {np.std(nonaddictive_values):.2f}\n")
+                f.write(f"  Range: {min(nonaddictive_values):.2f} - {max(nonaddictive_values):.2f}\n\n")
+            else:
+                f.write("No data available for non-addictive drugs\n\n")
+            
+            f.write("Files Generated:\n")
+            f.write("--------------\n")
+            f.write("- Heatmaps for addictive and non-addictive drugs\n")
+            f.write("- CSV files with ratio data for further analysis\n")
+        
+        print(f"Saved analysis summary to {summary_file}")
     
     def create_pathway_report(self, 
-                             drug_name: str, 
-                             region_name: str, 
-                             analysis_results: Dict, 
-                             output_path: str = None):
+                            drug_name: str, 
+                            region_name: str, 
+                            analysis_results: Dict, 
+                            output_path: str = None) -> str:
         """
         Create a detailed report of pathway analysis for a drug in a brain region.
         
@@ -258,6 +589,21 @@ class PathwayAnalyzer:
         str
             Report content as a string
         """
+        # Calculate suppression/addiction ratio
+        normal_addiction = len(analysis_results['normal_expression']['addiction_genes'])
+        normal_suppression = len(analysis_results['normal_expression']['suppression_genes'])
+        high_addiction = len(analysis_results['high_expression']['addiction_genes'])
+        high_suppression = len(analysis_results['high_expression']['suppression_genes'])
+        
+        total_addiction = normal_addiction + high_addiction
+        total_suppression = normal_suppression + high_suppression
+        
+        if total_addiction > 0:
+            ratio = total_suppression / total_addiction
+        else:
+            ratio = float('inf') if total_suppression > 0 else 0
+        
+        # Build the report
         report = []
         report.append(f"Pathway Analysis for {drug_name} in {region_name}")
         report.append("=" * 80 + "\n")
@@ -265,25 +611,31 @@ class PathwayAnalyzer:
         # Addiction and Suppression Gene Summary
         report.append("ADDICTION AND SUPPRESSION GENE SUMMARY")
         report.append("-" * 80)
+        report.append(f"Normal Expression - Addiction Genes: {normal_addiction} genes")
+        report.append(f"Normal Expression - Suppression Genes: {normal_suppression} genes")
+        report.append(f"High Expression - Addiction Genes: {high_addiction} genes")
+        report.append(f"High Expression - Suppression Genes: {high_suppression} genes\n")
         
-        normal_addiction = analysis_results['normal_expression']['addiction_genes']
-        normal_suppression = analysis_results['normal_expression']['suppression_genes']
-        high_addiction = analysis_results['high_expression']['addiction_genes']
-        high_suppression = analysis_results['high_expression']['suppression_genes']
+        report.append(f"Total Addiction Genes: {total_addiction}")
+        report.append(f"Total Suppression Genes: {total_suppression}")
+        report.append(f"Suppression/Addiction Ratio: {ratio:.2f}\n")
         
-        report.append(f"Normal Expression - Addiction Genes: {len(normal_addiction)} genes")
-        report.append(f"Normal Expression - Suppression Genes: {len(normal_suppression)} genes")
-        report.append(f"High Expression - Addiction Genes: {len(high_addiction)} genes")
-        report.append(f"High Expression - Suppression Genes: {len(high_suppression)} genes\n")
-        
-        if normal_addiction:
-            report.append(f"Addiction genes with normal expression: {', '.join(sorted(normal_addiction))}")
-        if normal_suppression:
-            report.append(f"Suppression genes with normal expression: {', '.join(sorted(normal_suppression))}")
-        if high_addiction:
-            report.append(f"Addiction genes with high expression: {', '.join(sorted(high_addiction))}")
-        if high_suppression:
-            report.append(f"Suppression genes with high expression: {', '.join(sorted(high_suppression))}\n")
+        # List specific genes
+        normal_addiction_genes = analysis_results['normal_expression']['addiction_genes']
+        if normal_addiction_genes:
+            report.append(f"Addiction genes with normal expression: {', '.join(sorted(normal_addiction_genes))}")
+            
+        normal_suppression_genes = analysis_results['normal_expression']['suppression_genes']
+        if normal_suppression_genes:
+            report.append(f"Suppression genes with normal expression: {', '.join(sorted(normal_suppression_genes))}")
+            
+        high_addiction_genes = analysis_results['high_expression']['addiction_genes']
+        if high_addiction_genes:
+            report.append(f"Addiction genes with high expression: {', '.join(sorted(high_addiction_genes))}")
+            
+        high_suppression_genes = analysis_results['high_expression']['suppression_genes']
+        if high_suppression_genes:
+            report.append(f"Suppression genes with high expression: {', '.join(sorted(high_suppression_genes))}\n")
         
         # Normal expression pathways
         report.append("NORMAL EXPRESSION PATHWAYS")
@@ -308,10 +660,10 @@ class PathwayAnalyzer:
                 
                 for gene in sorted(genes):
                     categories = []
-                    if gene in normal_addiction:
+                    if gene in normal_addiction_genes:
                         categories.append("A")
                         addiction_count += 1
-                    if gene in normal_suppression:
+                    if gene in normal_suppression_genes:
                         categories.append("S")
                         suppression_count += 1
                     
@@ -356,10 +708,10 @@ class PathwayAnalyzer:
                 
                 for gene in sorted(genes):
                     categories = []
-                    if gene in high_addiction:
+                    if gene in high_addiction_genes:
                         categories.append("A")
                         addiction_count += 1
-                    if gene in high_suppression:
+                    if gene in high_suppression_genes:
                         categories.append("S")
                         suppression_count += 1
                     
@@ -372,19 +724,4 @@ class PathwayAnalyzer:
                 report.append(f"Addiction genes: {addiction_count}, Suppression genes: {suppression_count}")
                 
                 # Calculate pathway coverage
-                if pathway in self.pathway_to_genes:
-                    all_pathway_genes = set(self.pathway_to_genes[pathway])
-                    coverage_percent = (len(genes) / len(all_pathway_genes)) * 100 if all_pathway_genes else 0
-                    report.append(f"Pathway coverage: {len(genes)}/{len(all_pathway_genes)} genes ({coverage_percent:.2f}%)\n")
-                else:
-                    report.append("")
-        else:
-            report.append("No pathways found for highly expressed drug genes\n")
-        
-        # Save report if output path is provided
-        if output_path:
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            with open(output_path, 'w') as f:
-                f.write('\n'.join(report))
-        
-        return '\n'.join(report)
+                if pathway in self.pathway_to
