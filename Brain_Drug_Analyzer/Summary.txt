@@ -1,0 +1,62 @@
+
+
+Project Goal: Created a Python module for analyzing drug interactions with addiction and suppression genes across brain regions, based on the research paper "Brain region specific gene signatures in addiction and addiction suppression"
+Core Components:
+
+Network analysis module for drug-gene interactions
+Brain region-specific gene expression analysis
+Suppression/addiction gene ratio calculation
+
+
+Network Analysis Module:
+
+Created functions to fetch protein interactions from STRING API
+Created functions to fetch drug-protein interactions from STITCH API
+Implemented network merging to combine gene networks with drug networks
+Added functionality to extract first and second-level drug interactions
+Created analysis tools to identify addiction and suppression genes in drug networks
+
+
+Directory Structure:
+
+Set up a proper Python module structure with __init__.py
+Organized brain region expression data in hierarchical directories
+Created examples directory for demo scripts
+
+
+Data Organization:
+
+Used pre-categorized gene expression data for 24 brain regions
+Structured data with High/Normal/Low expression categories
+Implemented loaders for the directory-based data structure
+
+
+Visualization:
+
+Added functions to visualize drug interaction networks
+Implemented heatmap generation for suppression/addiction ratios
+
+
+Workflow Implementation:
+
+Recreated the workflow from the paper:
+
+Build base network of addiction/suppression genes
+Build drug interaction network
+Merge networks and extract subnetworks
+Map interacting genes to brain regions
+Calculate suppression/addiction ratios
+
+
+
+
+Package Management:
+
+Created proper module imports and exports
+Set up version tracking
+
+
+
+The module now provides a computational framework for analyzing how 
+drugs interact with addiction and suppression genes across different brain regions, 
+which can help identify patterns that distinguish addictive from non-addictive drugs.
