@@ -723,5 +723,370 @@ class PathwayAnalyzer:
                 report.append(f"Drug genes in pathway ({len(genes)}): {', '.join(formatted_genes)}")
                 report.append(f"Addiction genes: {addiction_count}, Suppression genes: {suppression_count}")
                 
-                # Calculate pathway coverage
-                if pathway in self.pathway_to
+# Calculate pathway coverage
+                if pathway in self.pathway_to_genes:
+                    all_pathway_genes = set(self.pathway_to_genes[pathway])
+                    coverage_percent = (len(genes) / len(all_pathway_genes)) * 100 if all_pathway_genes else 0
+                    report.append(f"Pathway coverage: {len(genes)}/{len(all_pathway_genes)} genes ({coverage_percent:.2f}%)\n")
+                else:
+                    report.append("")
+        else:
+            report.append("No pathways found for highly expressed drug genes\n")
+        
+        # Save report if output path is provided
+        if output_path:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, 'w') as f:
+                f.write('\n'.join(report))
+        
+        return '\n'.join(report)
+    
+    def analyze_multiple_drugs(self, 
+                              drug_genes_dict: Dict[str, Set[str]], 
+                              region_name: str, 
+                              addiction_genes: Set[str], 
+                              suppression_genes: Set[str],
+                              output_dir: str = None) -> Dict[str, float]:
+        """
+        Analyze multiple drugs in a specific brain region and calculate suppression/addiction ratios.
+        
+        Parameters:
+        -----------
+        drug_genes_dict : Dict[str, Set[str]]
+            Dictionary mapping drug names to their target genes
+        region_name : str
+            Name of the brain region to analyze
+        addiction_genes : Set[str]
+            Set of genes associated with addiction
+        suppression_genes : Set[str]
+            Set of genes associated with addiction suppression
+        output_dir : str, optional
+            Directory to save analysis outputs
+            
+        Returns:
+        --------
+        Dict[str, float]
+            Dictionary mapping drug names to their suppression/addiction ratios
+        """
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        
+        # Dictionary to store results
+        drug_ratios = {}
+        
+        # Dictionary to store analysis results for report generation
+        drug_analyses = {}
+        
+        # Process each drug
+        for drug_name, drug_genes in drug_genes_dict.items():
+            print(f"Analyzing {drug_name} in {region_name}...")
+            
+            # Get region genes (assuming a method to fetch them exists)
+            region_genes = self._get_region_genes(region_name)
+            
+            if not region_genes:
+                print(f"Warning: No gene data found for region {region_name}")
+                continue
+            
+            # Analyze pathways
+            analysis = self.analyze_drug_region_pathways(
+                drug_genes, 
+                region_genes,
+                addiction_genes,
+                suppression_genes
+            )
+            
+            # Calculate ratio
+            ratio = self.calculate_suppression_addiction_ratio(
+                drug_genes,
+                region_genes,
+                addiction_genes,
+                suppression_genes
+            )
+            
+            # Store results
+            drug_ratios[drug_name] = ratio
+            drug_analyses[drug_name] = analysis
+            
+            # Generate report if output directory is provided
+            if output_dir:
+                output_path = os.path.join(output_dir, f"{drug_name}_{region_name}_pathways.txt")
+                self.create_pathway_report(drug_name, region_name, analysis, output_path)
+        
+        return drug_ratios
+    
+    def _get_region_genes(self, region_name: str) -> Dict[str, Set[str]]:
+        """
+        Get genes expressed in a specific brain region.
+        This is a placeholder method - in practice, you would implement this to
+        fetch genes from your brain region data structure.
+        
+        Parameters:
+        -----------
+        region_name : str
+            Name of the brain region
+            
+        Returns:
+        --------
+        Dict[str, Set[str]]
+            Dictionary with keys 'normal' and 'high' mapping to sets of genes
+        """
+        # This method should be implemented to retrieve genes from your data structure
+        # For now, return an empty dictionary
+        return {'normal': set(), 'high': set()}
+    
+    def generate_multi_region_heatmap(self, 
+                                    drug_genes_dict: Dict[str, Set[str]], 
+                                    region_names: List[str],
+                                    addiction_genes: Set[str],
+                                    suppression_genes: Set[str],
+                                    output_path: str = None,
+                                    drug_type: str = "Analyzed") -> plt.Figure:
+        """
+        Generate a heatmap of suppression/addiction ratios across multiple drugs and brain regions.
+        
+        Parameters:
+        -----------
+        drug_genes_dict : Dict[str, Set[str]]
+            Dictionary mapping drug names to their target genes
+        region_names : List[str]
+            List of brain region names to analyze
+        addiction_genes : Set[str]
+            Set of genes associated with addiction
+        suppression_genes : Set[str]
+            Set of genes associated with addiction suppression
+        output_path : str, optional
+            Path to save the heatmap image
+        drug_type : str, default="Analyzed"
+            Label for the drug type
+            
+        Returns:
+        --------
+        plt.Figure
+            Matplotlib figure with the heatmap
+        """
+        # Create a dictionary to store ratios
+        all_ratios = {}
+        
+        # Calculate ratios for each drug in each region
+        for drug_name, drug_genes in drug_genes_dict.items():
+            all_ratios[drug_name] = {}
+            
+            for region_name in region_names:
+                region_genes = self._get_region_genes(region_name)
+                
+                if region_genes:
+                    ratio = self.calculate_suppression_addiction_ratio(
+                        drug_genes,
+                        region_genes,
+                        addiction_genes,
+                        suppression_genes
+                    )
+                    all_ratios[drug_name][region_name] = ratio
+        
+        # Convert to DataFrame for visualization
+        rows = []
+        for drug, regions in all_ratios.items():
+            for region, ratio in regions.items():
+                rows.append({
+                    'Drug': drug,
+                    'Region': region,
+                    'Ratio': ratio if ratio != float('inf') else np.nan  # Handle infinity
+                })
+        
+        if not rows:
+            print(f"No data available to create heatmap")
+            return None
+            
+        df = pd.DataFrame(rows)
+        
+        # Create a pivot table for the heatmap
+        pivot_df = df.pivot_table(
+            values='Ratio', 
+            index='Drug',
+            columns='Region',
+            aggfunc='mean'
+        )
+        
+        # Sort drugs and regions alphabetically
+        pivot_df = pivot_df.sort_index(axis=0)
+        pivot_df = pivot_df.sort_index(axis=1)
+        
+        # Determine sensible color scale values
+        values = [v for v in df['Ratio'] if v != float('inf') and not np.isnan(v)]
+        if values:
+            vmin = max(1, np.percentile(values, 5))  # Use 5th percentile, but at least 1
+            vmax = min(np.percentile(values, 95), 30)  # Use 95th percentile, cap at 30
+        else:
+            vmin = 1
+            vmax = 20
+        
+        # Set up the figure
+        fig_width = max(16, len(pivot_df.columns) * 0.5)  # Adjust width based on columns
+        fig_height = max(8, len(pivot_df) * 0.5)  # Adjust height based on rows
+        
+        plt.figure(figsize=(fig_width, fig_height))
+        
+        # Generate heatmap
+        ax = sns.heatmap(
+            pivot_df, 
+            cmap='Blues_r',  # Reverse blue colormap (darker = lower values)
+            annot=True,      # Show values
+            fmt='.1f',       # Format to 1 decimal place
+            linewidths=0.5,
+            vmin=vmin,
+            vmax=vmax,
+            cbar_kws={'label': 'Suppression/Addiction Ratio'}
+        )
+        
+        # Customize the plot
+        plt.title(f'Suppression/Addiction Ratio for {drug_type} Drugs', fontsize=16)
+        
+        # Format x-axis labels - replace underscores with spaces
+        x_labels = [label.replace('_', ' ') for label in pivot_df.columns]
+        ax.set_xticklabels(x_labels, rotation=90, ha='center')
+        
+        # Format y-axis labels - replace underscores with spaces
+        y_labels = [label.replace('_', ' ') for label in pivot_df.index]
+        ax.set_yticklabels(y_labels, rotation=0)
+        
+        # Adjust layout
+        plt.tight_layout()
+        
+        # Save the figure if output path is provided
+        if output_path:
+            plt.savefig(output_path, dpi=300, bbox_inches='tight')
+            print(f"Saved heatmap to {output_path}")
+        
+        return plt.gcf()
+    
+    def compare_addictive_nonaddictive_drugs(self,
+                                           addictive_data: Dict,
+                                           nonaddictive_data: Dict,
+                                           output_dir: str = None) -> Dict:
+        """
+        Compare addictive and non-addictive drugs based on their suppression/addiction ratios.
+        
+        Parameters:
+        -----------
+        addictive_data : Dict
+            Data for addictive drugs with structure {drug_name: {brain_region: ratio}}
+        nonaddictive_data : Dict
+            Data for non-addictive drugs with structure {drug_name: {brain_region: ratio}}
+        output_dir : str, optional
+            Directory to save output files
+            
+        Returns:
+        --------
+        Dict
+            Dictionary with statistical comparison results
+        """
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        
+        # Extract ratio values
+        addictive_values = []
+        for drug, regions in addictive_data.items():
+            for region, ratio in regions.items():
+                if ratio != float('inf') and not np.isnan(ratio):
+                    addictive_values.append(ratio)
+        
+        nonaddictive_values = []
+        for drug, regions in nonaddictive_data.items():
+            for region, ratio in regions.items():
+                if ratio != float('inf') and not np.isnan(ratio):
+                    nonaddictive_values.append(ratio)
+        
+        # Perform statistical tests if data is available
+        results = {}
+        
+        if addictive_values and nonaddictive_values:
+            try:
+                # Mann-Whitney U test (non-parametric)
+                from scipy import stats
+                u_stat, p_value = stats.mannwhitneyu(addictive_values, nonaddictive_values, alternative='two-sided')
+                results['Mann-Whitney U'] = {
+                    'U-statistic': u_stat,
+                    'p-value': p_value,
+                    'significant': p_value < 0.05
+                }
+                
+                # T-test
+                t_stat, p_value = stats.ttest_ind(addictive_values, nonaddictive_values, equal_var=False)
+                results['T-test'] = {
+                    'T-statistic': t_stat,
+                    'p-value': p_value,
+                    'significant': p_value < 0.05
+                }
+            except ImportError:
+                print("Warning: scipy is required for statistical tests but not installed")
+            except Exception as e:
+                print(f"Error performing statistical tests: {e}")
+        
+        # Calculate summary statistics
+        summary = {
+            'addictive': {
+                'count': len(addictive_values),
+                'mean': np.mean(addictive_values) if addictive_values else None,
+                'median': np.median(addictive_values) if addictive_values else None,
+                'std': np.std(addictive_values) if addictive_values else None,
+                'min': min(addictive_values) if addictive_values else None,
+                'max': max(addictive_values) if addictive_values else None
+            },
+            'nonaddictive': {
+                'count': len(nonaddictive_values),
+                'mean': np.mean(nonaddictive_values) if nonaddictive_values else None,
+                'median': np.median(nonaddictive_values) if nonaddictive_values else None,
+                'std': np.std(nonaddictive_values) if nonaddictive_values else None,
+                'min': min(nonaddictive_values) if nonaddictive_values else None,
+                'max': max(nonaddictive_values) if nonaddictive_values else None
+            }
+        }
+        
+        # Create and save report if output directory is provided
+        if output_dir:
+            report_path = os.path.join(output_dir, 'drug_comparison_report.txt')
+            with open(report_path, 'w') as f:
+                f.write("Comparison of Addictive and Non-Addictive Drugs\n")
+                f.write("===========================================\n\n")
+                
+                f.write("Summary Statistics:\n")
+                f.write("-----------------\n\n")
+                
+                if addictive_values:
+                    f.write(f"Addictive Drugs (n={summary['addictive']['count']}):\n")
+                    f.write(f"  Mean Ratio: {summary['addictive']['mean']:.2f}\n")
+                    f.write(f"  Median Ratio: {summary['addictive']['median']:.2f}\n")
+                    f.write(f"  Standard Deviation: {summary['addictive']['std']:.2f}\n")
+                    f.write(f"  Range: {summary['addictive']['min']:.2f} - {summary['addictive']['max']:.2f}\n\n")
+                else:
+                    f.write("No data available for addictive drugs\n\n")
+                    
+                if nonaddictive_values:
+                    f.write(f"Non-addictive Drugs (n={summary['nonaddictive']['count']}):\n")
+                    f.write(f"  Mean Ratio: {summary['nonaddictive']['mean']:.2f}\n")
+                    f.write(f"  Median Ratio: {summary['nonaddictive']['median']:.2f}\n")
+                    f.write(f"  Standard Deviation: {summary['nonaddictive']['std']:.2f}\n")
+                    f.write(f"  Range: {summary['nonaddictive']['min']:.2f} - {summary['nonaddictive']['max']:.2f}\n\n")
+                else:
+                    f.write("No data available for non-addictive drugs\n\n")
+                
+                f.write("Statistical Tests:\n")
+                f.write("----------------\n\n")
+                
+                if not results:
+                    f.write("No statistical tests could be performed. Insufficient data.\n")
+                else:
+                    for test_name, test_results in results.items():
+                        f.write(f"{test_name}:\n")
+                        for key, value in test_results.items():
+                            f.write(f"  {key}: {value}\n")
+                        f.write("\n")
+            
+            print(f"Saved comparison report to {report_path}")
+        
+        # Return combined results
+        return {
+            'statistics': results,
+            'summary': summary
+        }
